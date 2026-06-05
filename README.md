@@ -3,6 +3,7 @@
 A buggy OS written in C and x86 assembly.
 
 **Disclamer**: most code here is written by AI, I don't know assembly or C, only Python at an intermediate level.
+(and a good 10% of the files here do nothing)
 
 ## Features
 
