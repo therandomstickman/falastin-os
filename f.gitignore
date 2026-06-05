@@ -1,0 +1,13 @@
+# Built files
+*.o
+kernel.bin
+falastinos.iso
+disk.img
+
+# QEMU save files
+*.qcow2
+*.img
+
+# Temporary files
+*.tmp
+*.swp
