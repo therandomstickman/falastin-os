@@ -8,7 +8,4 @@ int ata_read_sector(uint32_t lba, uint8_t* buffer);
 int ata_write_sector(uint32_t lba, const uint8_t* buffer);
 int ata_drive_present(void);
 
-// For testing
-void ata_test(void);
-
 #endif

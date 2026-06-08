@@ -1,128 +1,50 @@
 #include "diskfs.h"
-#include "ata.h"
 #include "screen.h"
-#include "fs.h"  // Add this for print_int
 
-#define BLOCK_SIZE 512
-#define FS_START_LBA 100
-#define MAX_FILES 64
+#define MAX_FILES 32
 #define MAX_FILENAME 32
-#define MAX_FILE_SIZE (32 * BLOCK_SIZE)
+#define MAX_FILE_SIZE 4096
 
 typedef struct {
     char name[MAX_FILENAME];
-    uint32_t size;
-    uint32_t start_block;
-    uint8_t used;
-} __attribute__((packed)) FileEntry;
+    char data[MAX_FILE_SIZE];
+    int size;
+    int used;
+    int is_dir;
+    int parent;
+} File;
 
-typedef struct {
-    uint32_t magic;
-    uint32_t version;
-    uint32_t file_count;
-    FileEntry files[MAX_FILES];
-} __attribute__((packed)) SuperBlock;
+static File files[MAX_FILES];
+static int current_dir = 0;
 
-static SuperBlock sb;
-static int diskfs_mounted = 0;
-
-static void diskfs_save_superblock(void)
+static void print_int(int num)
 {
-    uint8_t buffer[BLOCK_SIZE];
-    
-    for (int i = 0; i < BLOCK_SIZE; i++) {
-        buffer[i] = 0;
-    }
-    
-    SuperBlock* sb_ptr = (SuperBlock*)buffer;
-    sb_ptr->magic = 0x464C5356;
-    sb_ptr->version = 1;
-    sb_ptr->file_count = sb.file_count;
-    
-    for (int i = 0; i < MAX_FILES; i++) {
-        sb_ptr->files[i] = sb.files[i];
-    }
-    
-    ata_write_sector(FS_START_LBA, buffer);
-}
-
-static void diskfs_load_superblock(void)
-{
-    uint8_t buffer[BLOCK_SIZE];
-    
-    if (ata_read_sector(FS_START_LBA, buffer) == 0) {
-        SuperBlock* sb_ptr = (SuperBlock*)buffer;
-        
-        if (sb_ptr->magic == 0x464C5356) {
-            sb.magic = sb_ptr->magic;
-            sb.version = sb_ptr->version;
-            sb.file_count = sb_ptr->file_count;
-            
-            for (int i = 0; i < MAX_FILES; i++) {
-                sb.files[i] = sb_ptr->files[i];
-            }
-            print("Existing filesystem loaded\n");
-        } else {
-            sb.magic = 0x464C5356;
-            sb.version = 1;
-            sb.file_count = 0;
-            
-            for (int i = 0; i < MAX_FILES; i++) {
-                sb.files[i].used = 0;
-                sb.files[i].name[0] = '\0';
-                sb.files[i].size = 0;
-                sb.files[i].start_block = FS_START_LBA + 1 + i * (MAX_FILE_SIZE / BLOCK_SIZE);
-            }
-            
-            diskfs_save_superblock();
-            print("Created new filesystem\n");
-        }
-    } else {
-        sb.magic = 0x464C5356;
-        sb.version = 1;
-        sb.file_count = 0;
-        
-        for (int i = 0; i < MAX_FILES; i++) {
-            sb.files[i].used = 0;
-            sb.files[i].name[0] = '\0';
-            sb.files[i].size = 0;
-            sb.files[i].start_block = FS_START_LBA + 1 + i * (MAX_FILE_SIZE / BLOCK_SIZE);
-        }
-        
-        diskfs_save_superblock();
-        print("Created new filesystem\n");
-    }
-}
-
-void diskfs_init(void)
-{
-    print("Initializing Disk Filesystem...\n");
-    
-    if (!ata_drive_present()) {
-        print("No ATA drive found! Cannot mount disk filesystem.\n");
-        diskfs_mounted = 0;
+    char buffer[32];
+    int i = 0;
+    if (num == 0) {
+        put_char('0');
         return;
     }
-    
-    diskfs_load_superblock();
-    diskfs_mounted = 1;
-    
-    print("Filesystem ready, ");
-    print_int(sb.file_count);
-    print(" files present\n");
+    while (num > 0) {
+        buffer[i++] = '0' + (num % 10);
+        num /= 10;
+    }
+    for (int j = i - 1; j >= 0; j--) {
+        put_char(buffer[j]);
+    }
 }
 
-static int find_file(const char* name)
+static int find_file(const char* name, int parent)
 {
     for (int i = 0; i < MAX_FILES; i++) {
-        if (sb.files[i].used) {
+        if (files[i].used && files[i].parent == parent) {
             int match = 1;
             for (int j = 0; j < MAX_FILENAME; j++) {
-                if (sb.files[i].name[j] != name[j]) {
+                if (name[j] != files[i].name[j]) {
                     match = 0;
                     break;
                 }
-                if (name[j] == '\0' && sb.files[i].name[j] == '\0') break;
+                if (name[j] == '\0' && files[i].name[j] == '\0') break;
             }
             if (match) return i;
         }
@@ -130,46 +52,96 @@ static int find_file(const char* name)
     return -1;
 }
 
+static int find_free(void)
+{
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (!files[i].used) return i;
+    }
+    return -1;
+}
+
+void diskfs_init(void)
+{
+    for (int i = 0; i < MAX_FILES; i++) {
+        files[i].used = 0;
+        files[i].size = 0;
+        files[i].name[0] = '\0';
+        files[i].is_dir = 0;
+        files[i].parent = -1;
+    }
+    
+    // Root directory
+    files[0].used = 1;
+    files[0].is_dir = 1;
+    files[0].parent = -1;
+    files[0].name[0] = '/';
+    files[0].name[1] = '\0';
+    current_dir = 0;
+    
+    print("RAM filesystem initialized\n");
+    print("Use 'save' and 'load' commands for persistence via QEMU monitor\n");
+}
+
 int diskfs_create(const char* name)
 {
-    if (!diskfs_mounted) return -1;
-    
-    if (find_file(name) != -1) {
+    if (find_file(name, current_dir) != -1) {
         print("File already exists\n");
         return -1;
     }
     
-    for (int i = 0; i < MAX_FILES; i++) {
-        if (!sb.files[i].used) {
-            int j;
-            for (j = 0; j < MAX_FILENAME - 1 && name[j]; j++) {
-                sb.files[i].name[j] = name[j];
-            }
-            sb.files[i].name[j] = '\0';
-            sb.files[i].used = 1;
-            sb.files[i].size = 0;
-            sb.file_count++;
-            
-            diskfs_save_superblock();
-            print("Created: ");
-            print(name);
-            print("\n");
-            return 0;
-        }
+    int slot = find_free();
+    if (slot == -1) {
+        print("No free slots\n");
+        return -1;
     }
     
-    print("No space for new file\n");
-    return -1;
+    for (int i = 0; i < MAX_FILENAME - 1 && name[i]; i++) {
+        files[slot].name[i] = name[i];
+    }
+    files[slot].used = 1;
+    files[slot].is_dir = 0;
+    files[slot].parent = current_dir;
+    files[slot].size = 0;
+    
+    print("Created: ");
+    print(name);
+    print("\n");
+    return 0;
+}
+
+int diskfs_mkdir(const char* name)
+{
+    if (find_file(name, current_dir) != -1) {
+        print("Directory already exists\n");
+        return -1;
+    }
+    
+    int slot = find_free();
+    if (slot == -1) {
+        print("No free slots\n");
+        return -1;
+    }
+    
+    for (int i = 0; i < MAX_FILENAME - 1 && name[i]; i++) {
+        files[slot].name[i] = name[i];
+    }
+    files[slot].used = 1;
+    files[slot].is_dir = 1;
+    files[slot].parent = current_dir;
+    files[slot].size = 0;
+    
+    print("Directory created: ");
+    print(name);
+    print("\n");
+    return 0;
 }
 
 int diskfs_write(const char* name, const char* data, int size)
 {
-    if (!diskfs_mounted) return -1;
-    
-    int idx = find_file(name);
+    int idx = find_file(name, current_dir);
     if (idx == -1) {
         if (diskfs_create(name) != 0) return -1;
-        idx = find_file(name);
+        idx = find_file(name, current_dir);
     }
     
     if (size > MAX_FILE_SIZE) {
@@ -177,127 +149,126 @@ int diskfs_write(const char* name, const char* data, int size)
         return -1;
     }
     
-    print("Writing ");
-    print_int(size);
-    print(" bytes to ");
-    print(name);
-    print("\n");
-    
-    uint32_t current_block = sb.files[idx].start_block;
-    int blocks_needed = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    
-    for (int block = 0; block < blocks_needed; block++) {
-        uint8_t buffer[BLOCK_SIZE];
-        int offset = block * BLOCK_SIZE;
-        int bytes_to_copy = (size - offset > BLOCK_SIZE) ? BLOCK_SIZE : size - offset;
-        
-        for (int i = 0; i < BLOCK_SIZE; i++) {
-            buffer[i] = 0;
-        }
-        
-        for (int i = 0; i < bytes_to_copy; i++) {
-            buffer[i] = data[offset + i];
-        }
-        
-        if (ata_write_sector(current_block + block, buffer) != 0) {
-            print("Write failed!\n");
-            return -1;
-        }
+    for (int i = 0; i < size; i++) {
+        files[idx].data[i] = data[i];
     }
+    files[idx].size = size;
     
-    sb.files[idx].size = size;
-    diskfs_save_superblock();
-    
-    print("Write successful\n");
+    print("Written ");
+    print_int(size);
+    print(" bytes\n");
     return 0;
 }
 
 int diskfs_read(const char* name, char* buffer, int size)
 {
-    if (!diskfs_mounted) return -1;
-    
-    int idx = find_file(name);
+    int idx = find_file(name, current_dir);
     if (idx == -1) {
         print("File not found\n");
         return -1;
     }
     
     int read_size = size;
-    if ((unsigned int)read_size > sb.files[idx].size) {
-        read_size = sb.files[idx].size;
+    if (read_size > files[idx].size) read_size = files[idx].size;
+    
+    for (int i = 0; i < read_size; i++) {
+        buffer[i] = files[idx].data[i];
     }
-    
-    uint32_t current_block = sb.files[idx].start_block;
-    int blocks_needed = (sb.files[idx].size + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    int bytes_copied = 0;
-    
-    for (int block = 0; block < blocks_needed && bytes_copied < read_size; block++) {
-        uint8_t block_buffer[BLOCK_SIZE];
-        if (ata_read_sector(current_block + block, block_buffer) != 0) {
-            print("Read failed!\n");
-            return -1;
-        }
-        
-        int bytes_to_copy = read_size - bytes_copied;
-        if (bytes_to_copy > BLOCK_SIZE) {
-            bytes_to_copy = BLOCK_SIZE;
-        }
-        
-        for (int i = 0; i < bytes_to_copy; i++) {
-            buffer[bytes_copied + i] = block_buffer[i];
-        }
-        bytes_copied += bytes_to_copy;
-    }
-    
-    return bytes_copied;
+    return read_size;
 }
 
-void diskfs_list(void)
+void diskfs_list(const char* path)
 {
-    if (!diskfs_mounted) return;
-    
+    (void)path;
     int found = 0;
-    print("\n");
+    
     for (int i = 0; i < MAX_FILES; i++) {
-        if (sb.files[i].used) {
-            print("  ");
-            print(sb.files[i].name);
-            print(" (");
-            print_int(sb.files[i].size);
-            print(" bytes)\n");
+        if (files[i].used && files[i].parent == current_dir) {
             found = 1;
+            if (files[i].is_dir) {
+                print("  [DIR]  ");
+            } else {
+                print("  [FILE] ");
+            }
+            print(files[i].name);
+            if (!files[i].is_dir) {
+                print(" (");
+                print_int(files[i].size);
+                print(" bytes)");
+            }
+            print("\n");
         }
     }
-    
     if (!found) {
-        print("  No files\n");
+        print("  (empty)\n");
     }
-    print("\n");
 }
 
 int diskfs_delete(const char* name)
 {
-    if (!diskfs_mounted) return -1;
-    
-    int idx = find_file(name);
+    int idx = find_file(name, current_dir);
     if (idx == -1) {
         print("File not found\n");
         return -1;
     }
     
-    sb.files[idx].used = 0;
-    sb.files[idx].size = 0;
-    sb.files[idx].name[0] = '\0';
-    sb.file_count--;
-    
-    diskfs_save_superblock();
+    files[idx].used = 0;
     print("Deleted: ");
     print(name);
     print("\n");
     return 0;
 }
 
+int diskfs_cd(const char* path)
+{
+    if (path[0] == '/' && path[1] == '\0') {
+        current_dir = 0;
+        return 0;
+    }
+    
+    int idx = find_file(path, current_dir);
+    if (idx != -1 && files[idx].is_dir) {
+        current_dir = idx;
+        return 0;
+    }
+    
+    print("Directory not found\n");
+    return -1;
+}
+
+void diskfs_pwd(void)
+{
+    print("/\n");
+}
+
 int diskfs_exists(const char* name)
 {
-    return find_file(name) != -1;
+    return find_file(name, current_dir) != -1;
+}
+
+int diskfs_load_program(const char* name, uint8_t* buffer, int max_size)
+{
+    return diskfs_read(name, (char*)buffer, max_size);
+}
+
+void diskfs_debug(void)
+{
+    print("\n=== RAM Filesystem Debug ===\n");
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (files[i].used) {
+            print("Slot ");
+            print_int(i);
+            print(": ");
+            if (files[i].is_dir) print("[DIR] ");
+            else print("[FILE] ");
+            print(files[i].name);
+            print(" parent=");
+            print_int(files[i].parent);
+            if (!files[i].is_dir) {
+                print(" size=");
+                print_int(files[i].size);
+            }
+            print("\n");
+        }
+    }
 }

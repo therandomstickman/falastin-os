@@ -1,8 +1,18 @@
-#include <stdint.h>
 #include "commands.h"
 #include "screen.h"
 #include "fs.h"
-
+#include "loader.h"
+#include "editor.h"
+#include "ata.h"
+// Simple strcmp for command matching
+static int strcmp_cmd(const char* a, const char* b)
+{
+    while (*a && *b && *a == *b) {
+        a++;
+        b++;
+    }
+    return *a - *b;
+}
 typedef struct {
     const char* name;
     void (*func)(int argc, char** argv);
@@ -21,7 +31,11 @@ static void cmd_cat(int argc, char** argv);
 static void cmd_debug(int argc, char** argv);
 static void cmd_edit(int argc, char** argv);
 static void cmd_bugs(int argc, char** argv);
-
+static void cmd_mkdir(int argc, char** argv);
+static void cmd_cd(int argc, char** argv);
+static void cmd_pwd(int argc, char** argv);
+static void cmd_rmdir(int argc, char** argv);
+static void cmd_testata(int argc, char** argv);
 
 static Command commands[] = {
     {"help", cmd_help, "help - Show this help"},
@@ -36,6 +50,12 @@ static Command commands[] = {
     {"debug", cmd_debug, "debug - Show filesystem debug info"},
     {"edit", cmd_edit, "edit <filename> - Edit a file"},
     {"bugs", cmd_bugs, "bugs - Display known issues"},
+    {"mkdir", cmd_mkdir, "mkdir <dir> - Create directory"},
+    {"cd", cmd_cd, "cd <dir> - Change directory"},
+    {"pwd", cmd_pwd, "pwd - Print working directory"},
+    {"rmdir", cmd_rmdir, "rmdir <dir> - Remove empty directory"},
+    {"testata", cmd_testata, "testata - Test ATA read/write"},
+
 };
 
 #define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
@@ -73,7 +93,7 @@ void execute_command(const char* input_str)
     if (argc == 0) return;
     
     for (unsigned int i = 0; i < COMMAND_COUNT; i++) {
-        if (strcmp_fs(argv[0], commands[i].name) == 0) {
+        if (strcmp_cmd(argv[0], commands[i].name) == 0) {
             commands[i].func(argc, argv);
             return;
         }
@@ -117,7 +137,13 @@ static void cmd_clear(int argc, char** argv)
 static void cmd_ls(int argc, char** argv)
 {
     (void)argc; (void)argv;
-    fs_list();
+    
+    // If an argument is provided, use it as path, otherwise use current directory
+    if (argc >= 2) {
+        fs_list(argv[1]);
+    } else {
+        fs_list(".");  // Current directory
+    }
 }
 
 static void cmd_touch(int argc, char** argv)
@@ -201,4 +227,82 @@ static void cmd_bugs(int argc, char** argv)
     print("yeah thats all, sorry for the formatting btw to whoever reads this, i will never remove this\n");
     print("==========================FIXED BUGS=============================================================================\n");
     print("1. number two has been fixed\n");
+}
+
+static void cmd_mkdir(int argc, char** argv)
+{
+    if (argc < 2) {
+        print("Usage: mkdir <directory>\n");
+        return;
+    }
+    fs_mkdir(argv[1]);
+}
+
+static void cmd_cd(int argc, char** argv)
+{
+    if (argc < 2) {
+        fs_cd("/");
+    } else {
+        fs_cd(argv[1]);
+    }
+}
+
+static void cmd_pwd(int argc, char** argv)
+{
+    (void)argc; (void)argv;
+    fs_pwd();
+}
+
+static void cmd_rmdir(int argc, char** argv)
+{
+    if (argc < 2) {
+        print("Usage: rmdir <directory>\n");
+        return;
+    }
+    fs_delete(argv[1]);  // Delete handles directory check
+}
+
+static void cmd_testata(int argc, char** argv)
+{
+    (void)argc; (void)argv;
+    
+    print("Testing ATA write/read...\n");
+    
+    uint8_t write_buf[512];
+    uint8_t read_buf[512];
+    
+    // Fill test pattern
+    for (int i = 0; i < 512; i++) {
+        write_buf[i] = i % 256;
+    }
+    
+    print("Writing to sector 200...\n");
+    if (ata_write_sector(200, write_buf) != 0) {
+        print("Write failed!\n");
+        return;
+    }
+    
+    print("Reading from sector 200...\n");
+    if (ata_read_sector(200, read_buf) != 0) {
+        print("Read failed!\n");
+        return;
+    }
+    
+    // Verify
+    int match = 1;
+    for (int i = 0; i < 512; i++) {
+        if (write_buf[i] != read_buf[i]) {
+            print("Mismatch at byte ");
+            print_int(i);
+            print("\n");
+            match = 0;
+            break;
+        }
+    }
+    
+    if (match) {
+        print("ATA test PASSED! Disk works.\n");
+    } else {
+        print("ATA test FAILED!\n");
+    }
 }

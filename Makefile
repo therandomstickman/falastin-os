@@ -22,9 +22,10 @@ kernel.bin:
 	gcc $(CFLAGS) -c editor.c -o editor.o
 
 	ld -m elf_i386 -T linker.ld \
-	kernel_entry.o gdt.o idt.o irq.o \
-	kernel.o screen.o cursor.o shell.o commands.o keyboard.o interrupts.o pic.o fs.o ata.o diskfs.o loader.o editor.o \
-	-o kernel.bin
+		kernel_entry.o gdt.o idt.o irq.o \
+		kernel.o screen.o cursor.o shell.o commands.o \
+		keyboard.o interrupts.o pic.o fs.o ata.o diskfs.o loader.o editor.o \
+		-o kernel.bin
 
 iso:
 	rm -rf iso falastinos.iso
@@ -34,19 +35,11 @@ iso:
 	grub-mkrescue -o falastinos.iso iso
 
 run: kernel.bin iso
-	@if [ ! -f disk.img ]; then \
-		qemu-img create -f raw disk.img 10M > /dev/null 2>&1; \
-		echo "Created disk.img (10MB)"; \
+	@if [ ! -f falastinos.qcow2 ]; then \
+		qemu-img create -f qcow2 falastinos.qcow2 10M > /dev/null 2>&1; \
+		echo "Created disk image: falastinos.qcow2"; \
 	fi
-	qemu-system-i386 -cdrom falastinos.iso -hda disk.img
+	qemu-system-i386 -cdrom falastinos.iso -hda falastinos.qcow2 -m 32
 
 clean:
 	rm -rf *.o kernel.bin iso falastinos.iso disk.img
-release: kernel.bin iso
-	# Copy the ISO for release
-	cp falastinos.iso falastinos-$(VERSION).iso
-	# Create a blank disk image
-	qemu-img create -f raw disk-$(VERSION).img 10M
-	# Create a README for the release
-	echo "FalastinOS $(VERSION)" > release-notes.txt
-	echo "Run with: qemu-system-i386 -cdrom falastinos-$(VERSION).iso -hda disk-$(VERSION).img" >> release-notes.txt
