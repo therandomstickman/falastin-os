@@ -1,13 +1,32 @@
 #include "ata.h"
 #include "screen.h"
+#include "diskfs.h"
 
-#define ATA_PRIMARY_IO 0x1F0
-#define ATA_PRIMARY_CONTROL 0x3F6
+
+static inline void outb(uint16_t port, uint8_t val) {
+    asm volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint8_t inb(uint16_t port) {
+    uint8_t ret;
+    asm volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
+// ADD THESE RIGHT HERE, before any function that uses them
+static inline void outw(uint16_t port, uint16_t val) {
+    asm volatile ("outw %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint16_t inw(uint16_t port) {
+    uint16_t ret;
+    asm volatile ("inw %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;  // was just "return" with no value
+}
 
 static int ata_present = 0;
 
-static void print_int(int num)
-{
+static void print_int(int num) {
     char buffer[32];
     int i = 0;
     if (num == 0) {
@@ -23,163 +42,122 @@ static void print_int(int num)
     }
 }
 
-static inline void outb(uint16_t port, uint8_t val)
-{
-    asm volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
-}
 
-static inline uint8_t inb(uint16_t port)
-{
-    uint8_t ret;
-    asm volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
 
-static inline void io_wait(void)
-{
+
+static void io_wait(void) {
     inb(0x80);
     inb(0x80);
     inb(0x80);
     inb(0x80);
 }
 
-// Wait for drive ready
-static int ata_poll(void)
-{
-    for (int i = 0; i < 1000000; i++) {
-        uint8_t status = inb(ATA_PRIMARY_IO + 7);
-        if (!(status & 0x80)) {  // BSY cleared
-            if (status & 0x01) return -1;  // Error
-            return 0;
-        }
+static int ata_poll_bsy(void) {
+    int timeout = 1000000;
+    while (timeout--) {
+        if (!(inb(0x1F7) & 0x80)) return 0;
         io_wait();
     }
     return -1;
 }
 
-// Wait for data request
-static int ata_poll_drq(void)
-{
-    for (int i = 0; i < 1000000; i++) {
-        uint8_t status = inb(ATA_PRIMARY_IO + 7);
-        if (!(status & 0x80)) {
-            if (status & 0x08) return 0;  // DRQ set
-            if (status & 0x01) return -1;  // Error
-        }
+static int ata_poll_drq(void) {
+    int timeout = 1000000;
+    while (timeout--) {
+        uint8_t status = inb(0x1F7);
+        if (status & 0x01) return -1; // error
+        if (status & 0x08) return 0;  // DRQ set
         io_wait();
     }
     return -1;
 }
 
-static int ata_identify(void)
-{
-    // Select master
-    outb(ATA_PRIMARY_IO + 6, 0xA0);
+static int ata_identify(void) {
+    outb(0x1F6, 0xA0);
     io_wait();
-    
-    // Zero out registers
-    outb(ATA_PRIMARY_IO + 2, 0);
-    outb(ATA_PRIMARY_IO + 3, 0);
-    outb(ATA_PRIMARY_IO + 4, 0);
-    outb(ATA_PRIMARY_IO + 5, 0);
+    outb(0x1F2, 0);
+    outb(0x1F3, 0);
+    outb(0x1F4, 0);
+    outb(0x1F5, 0);
+    outb(0x1F7, 0xEC);
     io_wait();
-    
-    // Send identify command
-    outb(ATA_PRIMARY_IO + 7, 0xEC);
-    io_wait();
-    
-    // Check if drive exists
-    uint8_t status = inb(ATA_PRIMARY_IO + 7);
+
+    uint8_t status = inb(0x1F7);
     if (status == 0 || status == 0xFF) return -1;
-    
-    // Poll for ready
-    if (ata_poll() != 0) return -1;
-    
-    // Wait for DRQ
+    if (ata_poll_bsy() != 0) return -1;
+
+    status = inb(0x1F7);
+    if (status & 0x01) return -1;
     if (ata_poll_drq() != 0) return -1;
-    
-    // Read identify data (256 words)
-    for (int i = 0; i < 256; i++) {
-        inb(ATA_PRIMARY_IO);
-        inb(ATA_PRIMARY_IO);
-    }
-    
+
+    // Consume identify data using inw
+    for (int i = 0; i < 256; i++)
+        inw(0x1F0);
+
     return 0;
 }
 
-void ata_init(void)
-{
+void ata_init(void) {
     print("Initializing ATA...\n");
     
     if (ata_identify() == 0) {
         ata_present = 1;
-        print("ATA drive detected!\n");
+        print("ATA drive detected and initialized.\n");
     } else {
-        print("No ATA drive found\n");
+        print("No ATA drive found.\n");
     }
 }
 
-int ata_drive_present(void)
-{
-    return ata_present;
-}
-
-int ata_read_sector(uint32_t lba, uint8_t* buffer)
-{
+int ata_read_sector(uint32_t lba, uint8_t* buffer) {
     if (!ata_present) return -1;
-    
-    // Select drive and LBA
-    outb(ATA_PRIMARY_IO + 6, 0xE0 | ((lba >> 24) & 0x0F));
+
+    if (ata_poll_bsy() != 0) return -1;
+
+    outb(0x1F6, 0xE0 | ((lba >> 24) & 0x0F));
     io_wait();
-    
-    // Send command
-    outb(ATA_PRIMARY_IO + 2, 1);      // 1 sector
-    outb(ATA_PRIMARY_IO + 3, lba & 0xFF);
-    outb(ATA_PRIMARY_IO + 4, (lba >> 8) & 0xFF);
-    outb(ATA_PRIMARY_IO + 5, (lba >> 16) & 0xFF);
-    outb(ATA_PRIMARY_IO + 7, 0x20);   // Read command
-    
-    // Wait for data
+    outb(0x1F2, 1);
+    outb(0x1F3, (uint8_t)lba);
+    outb(0x1F4, (uint8_t)(lba >> 8));
+    outb(0x1F5, (uint8_t)(lba >> 16));
+    outb(0x1F7, 0x20);
+
     if (ata_poll_drq() != 0) return -1;
-    
-    // Read 256 words
-    for (int i = 0; i < 256; i++) {
-        uint16_t data = inb(ATA_PRIMARY_IO) | (inb(ATA_PRIMARY_IO) << 8);
-        buffer[i*2] = data & 0xFF;
-        buffer[i*2+1] = (data >> 8) & 0xFF;
-    }
-    
+
+    // Read 256 WORDS (512 bytes) using inw
+    uint16_t* buf16 = (uint16_t*)buffer;
+    for (int i = 0; i < 256; i++)
+        buf16[i] = inw(0x1F0);
+
     return 0;
 }
 
-int ata_write_sector(uint32_t lba, const uint8_t* buffer)
-{
+int ata_write_sector(uint32_t lba, const uint8_t* buffer) {
     if (!ata_present) return -1;
-    
-    // Select drive and LBA
-    outb(ATA_PRIMARY_IO + 6, 0xE0 | ((lba >> 24) & 0x0F));
+
+    if (ata_poll_bsy() != 0) return -1;
+
+    outb(0x1F6, 0xE0 | ((lba >> 24) & 0x0F));
     io_wait();
-    
-    // Send command
-    outb(ATA_PRIMARY_IO + 2, 1);      // 1 sector
-    outb(ATA_PRIMARY_IO + 3, lba & 0xFF);
-    outb(ATA_PRIMARY_IO + 4, (lba >> 8) & 0xFF);
-    outb(ATA_PRIMARY_IO + 5, (lba >> 16) & 0xFF);
-    outb(ATA_PRIMARY_IO + 7, 0x30);   // Write command
-    
-    // Wait for DRQ
+    outb(0x1F2, 1);
+    outb(0x1F3, (uint8_t)lba);
+    outb(0x1F4, (uint8_t)(lba >> 8));
+    outb(0x1F5, (uint8_t)(lba >> 16));
+    outb(0x1F7, 0x30);
+
     if (ata_poll_drq() != 0) return -1;
-    
-    // Write 256 words
-    for (int i = 0; i < 256; i++) {
-        uint16_t data = buffer[i*2] | (buffer[i*2+1] << 8);
-        outb(ATA_PRIMARY_IO, data & 0xFF);
-        outb(ATA_PRIMARY_IO, (data >> 8) & 0xFF);
-    }
-    
+
+    // Write 256 WORDS using outw
+    uint16_t* buf16 = (uint16_t*)buffer;
+    for (int i = 0; i < 256; i++)
+        outw(0x1F0, buf16[i]);
+
     // Cache flush
-    outb(ATA_PRIMARY_IO + 7, 0xE7);
-    ata_poll();
-    
+    outb(0x1F7, 0xE7);
+    ata_poll_bsy();
+
     return 0;
+}
+
+int ata_drive_present(void) {
+    return ata_present;
 }

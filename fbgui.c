@@ -1,0 +1,125 @@
+#include "screen.h"
+#include "keyboard.h"
+#include "graphics.h"
+
+static inline void outb(uint16_t port, uint8_t val)
+{
+    asm volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint8_t inb(uint16_t port)
+{
+    uint8_t ret;
+    asm volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
+static void set_vga_mode_13h(void) {
+    outb(0x3C2, 0x63);
+    
+    outb(0x3D4, 0x00); outb(0x3D5, 0x5F);
+    outb(0x3D4, 0x01); outb(0x3D5, 0x4F);
+    outb(0x3D4, 0x02); outb(0x3D5, 0x50);
+    outb(0x3D4, 0x03); outb(0x3D5, 0x82);
+    outb(0x3D4, 0x04); outb(0x3D5, 0x54);
+    outb(0x3D4, 0x05); outb(0x3D5, 0x80);
+    outb(0x3D4, 0x06); outb(0x3D5, 0xBF);
+    outb(0x3D4, 0x07); outb(0x3D5, 0x1F);
+    outb(0x3D4, 0x08); outb(0x3D5, 0x00);
+    outb(0x3D4, 0x09); outb(0x3D5, 0x41);
+    outb(0x3D4, 0x10); outb(0x3D5, 0x9C);
+    outb(0x3D4, 0x11); outb(0x3D5, 0x0E);
+    outb(0x3D4, 0x12); outb(0x3D5, 0x8F);
+    outb(0x3D4, 0x13); outb(0x3D5, 0x28);
+    outb(0x3D4, 0x14); outb(0x3D5, 0x1F);
+    outb(0x3D4, 0x15); outb(0x3D5, 0x96);
+    outb(0x3D4, 0x16); outb(0x3D5, 0xB9);
+    outb(0x3D4, 0x17); outb(0x3D5, 0xA3);
+    
+    outb(0x3C4, 0x01); outb(0x3C5, 0x01);
+    outb(0x3C4, 0x04); outb(0x3C5, 0x02);
+    
+    outb(0x3CE, 0x05); outb(0x3CF, 0x00);
+    outb(0x3CE, 0x06); outb(0x3CF, 0x0E);
+}
+
+static void set_text_mode(void) {
+    outb(0x3C2, 0x67);
+    
+    outb(0x3D4, 0x00); outb(0x3D5, 0x5F);
+    outb(0x3D4, 0x01); outb(0x3D5, 0x4F);
+    outb(0x3D4, 0x02); outb(0x3D5, 0x50);
+    outb(0x3D4, 0x03); outb(0x3D5, 0x82);
+    outb(0x3D4, 0x04); outb(0x3D5, 0x55);
+    outb(0x3D4, 0x05); outb(0x3D5, 0x81);
+    outb(0x3D4, 0x06); outb(0x3D5, 0xBF);
+    outb(0x3D4, 0x07); outb(0x3D5, 0x1F);
+    outb(0x3D4, 0x08); outb(0x3D5, 0x00);
+    outb(0x3D4, 0x09); outb(0x3D5, 0x4F);
+    outb(0x3D4, 0x10); outb(0x3D5, 0x9C);
+    outb(0x3D4, 0x11); outb(0x3D5, 0x0E);
+    outb(0x3D4, 0x12); outb(0x3D5, 0x8F);
+    outb(0x3D4, 0x13); outb(0x3D5, 0x28);
+    outb(0x3D4, 0x14); outb(0x3D5, 0x1F);
+    outb(0x3D4, 0x15); outb(0x3D5, 0x96);
+    outb(0x3D4, 0x16); outb(0x3D5, 0xB9);
+    outb(0x3D4, 0x17); outb(0x3D5, 0xA3);
+    
+    outb(0x3C4, 0x01); outb(0x3C5, 0x01);
+    outb(0x3C4, 0x03); outb(0x3C5, 0x00);
+    outb(0x3C4, 0x04); outb(0x3C5, 0x02);
+    
+    outb(0x3CE, 0x05); outb(0x3CF, 0x00);
+    outb(0x3CE, 0x06); outb(0x3CF, 0x0E);
+    
+    // Clear screen
+    uint16_t* text_vga = (uint16_t*)0xB8000;
+    for (int i = 0; i < 80 * 25; i++) {
+        text_vga[i] = 0x0720;
+    }
+}
+
+void fbgui_run(void) {
+    print("Switching to graphics mode...\n");
+    
+    set_vga_mode_13h();
+    
+    // Direct VGA framebuffer access
+    uint8_t* vga = (uint8_t*)0xA0000;
+    
+    // Fill screen with a pattern - bright green in top half, red in bottom
+    for (int y = 0; y < 200; y++) {
+        for (int x = 0; x < 320; x++) {
+            if (y < 100) {
+                vga[y * 320 + x] = 2;  // Green
+            } else {
+                vga[y * 320 + x] = 4;  // Red
+            }
+        }
+    }
+    
+    // Draw a white rectangle in the center
+    for (int y = 70; y < 130; y++) {
+        for (int x = 100; x < 220; x++) {
+            vga[y * 320 + x] = 15;  // White
+        }
+    }
+    
+    print("Graphics mode active. Green top, red bottom, white box.\n");
+    print("Press ESC to return.\n");
+    
+    // Simple keyboard poll (use direct I/O since we're in graphics mode)
+    while (1) {
+        // Check if a key was pressed
+        if (inb(0x64) & 0x01) {
+            uint8_t scancode = inb(0x60);
+            if (scancode == 0x01) {  // ESC key scancode
+                break;
+            }
+        }
+    }
+    
+    set_text_mode();
+    clear_screen();
+    print("Returned to text mode.\n");
+}

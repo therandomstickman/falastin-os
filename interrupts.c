@@ -26,6 +26,8 @@ extern void load_idt(uint32_t);
 extern void load_gdt(void);
 extern void gdt_flush(void);
 extern void irq1_handler(void);
+extern void irq12_handler(void);
+extern void irq0_handler(void);
 
 static void set_gate(int num, uint32_t handler, uint16_t selector, uint8_t flags)
 {
@@ -55,6 +57,9 @@ void init_idt(void)
     
     // Set keyboard interrupt gate
     set_gate(0x21, (uint32_t)irq1_handler, 0x08, 0x8E);
+    set_gate(0x2C, (uint32_t)irq12_handler, 0x08, 0x8E);
+    set_gate(0x20, (uint32_t)irq0_handler, 0x08, 0x8E);
+    
     
     // Load IDT
     idtp.limit = sizeof(idt) - 1;

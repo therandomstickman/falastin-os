@@ -6,6 +6,11 @@ static volatile char last_char = 0;
 static volatile int char_ready = 0;
 static volatile int shift_pressed = 0;
 static volatile int ctrl_pressed = 0;
+static volatile int extended = 0;  // For extended keys (0xE0 prefix)
+
+int keyboard_has_char(void) {
+    return char_ready;
+}
 
 static inline uint8_t inb(uint16_t port)
 {
@@ -34,6 +39,12 @@ void irq1_c(void)
 {
     uint8_t scancode = inb(0x60);
     
+    // Handle extended key prefix (0xE0)
+    if (scancode == 0xE0) {
+        extended = 1;
+        return;
+    }
+    
     // Handle modifier keys
     if (scancode == 0x2A || scancode == 0x36) {  // Left or Right Shift press
         shift_pressed = 1;
@@ -54,6 +65,22 @@ void irq1_c(void)
     
     // Only handle key press (not release)
     if (!(scancode & 0x80)) {
+        // Handle extended keys (arrows, delete, etc.)
+        if (extended) {
+            extended = 0;
+            switch(scancode) {
+                case 0x48: last_char = KEY_UP; char_ready = 1; return;
+                case 0x50: last_char = KEY_DOWN; char_ready = 1; return;
+                case 0x4B: last_char = KEY_LEFT; char_ready = 1; return;
+                case 0x4D: last_char = KEY_RIGHT; char_ready = 1; return;
+                case 0x53: last_char = KEY_DELETE; char_ready = 1; return;
+                case 0x47: last_char = KEY_HOME; char_ready = 1; return;
+                case 0x4F: last_char = KEY_END; char_ready = 1; return;
+                default: return;
+            }
+        }
+        
+        // Normal keys
         if (scancode < sizeof(scancode_to_ascii)) {
             char c = 0;
             
@@ -81,12 +108,22 @@ void irq1_c(void)
                 char_ready = 1;
             }
         }
+    } else {
+        // Key release - reset extended flag on release of extended keys
+        if (extended) {
+            extended = 0;
+        }
     }
 }
 
 char keyboard_getchar(void)
 {
     while (!char_ready);
+    char_ready = 0;
+    return last_char;
+}
+
+char keyboard_consume_char(void) {
     char_ready = 0;
     return last_char;
 }
